@@ -20,7 +20,7 @@ use core::{fmt, mem, ptr};
 #[cfg(feature = "std")]
 use std::error::Error;
 
-use hashbrown::{HashMap, HashSet};
+use hashbrown::{hash_map::OccupiedEntry, HashMap, HashSet};
 
 use crate::alloc::boxed::Box;
 use crate::archetype::Archetype;
@@ -305,22 +305,41 @@ impl World {
     /// let c = world.spawn((42, "def"));
     /// let entities = world.query::<(&i32, &bool)>()
     ///     .iter()
-    ///     .map(|(e, (&i, &b))| (e, i, b)) // Copy out of the world
+    ///     .map(|(e, (i, b))| (e, *i, *b)) // Copy out of the world
     ///     .collect::<Vec<_>>();
     /// assert_eq!(entities.len(), 2);
     /// assert!(entities.contains(&(a, 123, true)));
     /// assert!(entities.contains(&(b, 456, false)));
     /// ```
-    pub fn query<Q: Query>(&self) -> QueryBorrow<'_, Q> {
-        QueryBorrow::new(&self.entities.meta, &self.archetypes)
+    pub fn query<'q, Q: Query<'q>>(&'q self) -> QueryBorrow<'q, Q, ()> {
+        self.query_with_context(())
+    }
+
+    pub fn query_with_context<'q, Q, C>(&'q self, context: C) -> QueryBorrow<'q, Q, C>
+    where
+        Q: Query<'q, C>,
+        C: Copy + 'q,
+    {
+        QueryBorrow::new(&self.entities.meta, &self.archetypes, context)
     }
 
     /// Query a uniquely borrowed world
     ///
     /// Like `query`, but faster because dynamic borrow checks can be skipped. Note that, unlike
     /// `query`, this returns an `IntoIterator` which can be passed directly to a `for` loop.
-    pub fn query_mut<Q: Query>(&mut self) -> QueryMut<'_, Q> {
-        QueryMut::new(&self.entities.meta, &mut self.archetypes)
+    pub fn query_mut<Q>(&mut self) -> QueryMut<'_, 'static, Q, ()>
+    where
+        Q: Query<'static, ()>,
+    {
+        self.query_mut_with_context(())
+    }
+
+    pub fn query_mut_with_context<'c, Q, C>(&mut self, context: C) -> QueryMut<'_, 'c, Q, C>
+    where
+        Q: Query<'c, C>,
+        C: Clone + 'c,
+    {
+        QueryMut::new(&self.entities.meta, &mut self.archetypes, context)
     }
 
     /// Prepare a query against a single entity, using dynamic borrow checking
@@ -340,28 +359,67 @@ impl World {
     /// let a = world.spawn((123, true, "abc"));
     /// // The returned query must outlive the borrow made by `get`
     /// let mut query = world.query_one::<(&mut i32, &bool)>(a).unwrap();
-    /// let (number, flag) = query.get().unwrap();
+    /// let (mut number, flag) = query.get().unwrap();
     /// if *flag { *number *= 2; }
     /// assert_eq!(*number, 246);
     /// ```
-    pub fn query_one<Q: Query>(&self, entity: Entity) -> Result<QueryOne<'_, Q>, NoSuchEntity> {
+    pub fn query_one<'q, Q>(&'q self, entity: Entity) -> Result<QueryOne<'_, Q, ()>, NoSuchEntity>
+    where
+        Q: Query<'q>,
+    {
+        self.query_one_with_context(entity, ())
+    }
+
+    pub fn query_one_with_context<'q, Q, C>(
+        &'q self,
+        entity: Entity,
+        context: C,
+    ) -> Result<QueryOne<'q, Q, C>, NoSuchEntity>
+    where
+        Q: Query<'q, C>,
+        C: Copy + 'q,
+    {
         let loc = self.entities.get(entity)?;
-        Ok(unsafe { QueryOne::new(&self.archetypes[loc.archetype as usize], loc.index) })
+        Ok(unsafe {
+            QueryOne::new(
+                &self.archetypes[loc.archetype as usize],
+                loc.index,
+                entity,
+                context,
+            )
+        })
     }
 
     /// Query a single entity in a uniquely borrow world
     ///
     /// Like `query_one`, but faster because dynamic borrow checks can be skipped. Note that, unlike
     /// `query_one`, on success this returns the query's results directly.
-    pub fn query_one_mut<Q: Query>(
+    pub fn query_one_mut<Q: Query<'static>>(
         &mut self,
         entity: Entity,
-    ) -> Result<QueryItem<'_, Q>, QueryOneError> {
+    ) -> Result<QueryItem<'_, 'static, Q, ()>, QueryOneError> {
         let loc = self.entities.get(entity)?;
         unsafe {
             let fetch = Q::Fetch::new(&self.archetypes[loc.archetype as usize])
                 .ok_or(QueryOneError::Unsatisfied)?;
-            Ok(fetch.get(loc.index as usize))
+            Ok(fetch.get(loc.index as usize, entity, ()))
+        }
+    }
+
+    pub fn query_one_mut_with_context<'c, Q, C>(
+        &mut self,
+        entity: Entity,
+        context: C,
+    ) -> Result<QueryItem<'_, 'c, Q, C>, QueryOneError>
+    where
+        Q: Query<'c, C>,
+        C: Clone + 'c,
+    {
+        let loc = self.entities.get(entity)?;
+        unsafe {
+            let fetch = Q::Fetch::new(&self.archetypes[loc.archetype as usize])
+                .ok_or(QueryOneError::Unsatisfied)?;
+            Ok(fetch.get(loc.index as usize, entity, context))
         }
     }
 
@@ -370,31 +428,76 @@ impl World {
     /// Panics if the component is already uniquely borrowed from another entity with the same
     /// components.
     pub fn get<T: Component>(&self, entity: Entity) -> Result<Ref<'_, T>, ComponentError> {
-        let loc = self.entities.get(entity)?;
-        if loc.archetype == 0 {
-            return Err(MissingComponent::new::<T>().into());
-        }
-        Ok(unsafe { Ref::new(&self.archetypes[loc.archetype as usize], loc.index)? })
+        self.get_with_context(entity, ())
     }
 
     /// Uniquely borrow the `T` component of `entity`
     ///
     /// Panics if the component is already borrowed from another entity with the same components.
     pub fn get_mut<T: Component>(&self, entity: Entity) -> Result<RefMut<'_, T>, ComponentError> {
-        let loc = self.entities.get(entity)?;
-        if loc.archetype == 0 {
-            return Err(MissingComponent::new::<T>().into());
-        }
-        Ok(unsafe { RefMut::new(&self.archetypes[loc.archetype as usize], loc.index)? })
+        self.get_mut_with_context(entity, ())
     }
 
     /// Access an entity regardless of its component types
     ///
     /// Does not immediately borrow any component.
     pub fn entity(&self, entity: Entity) -> Result<EntityRef<'_>, NoSuchEntity> {
+        self.entity_with_context(entity, ())
+    }
+
+    pub fn get_with_context<T: SmartComponent<C>, C: Clone>(
+        &self,
+        entity: Entity,
+        context: C,
+    ) -> Result<Ref<'_, T, C>, ComponentError> {
+        let loc = self.entities.get(entity)?;
+        if loc.archetype == 0 {
+            return Err(MissingComponent::new::<T>().into());
+        }
+        Ok(unsafe {
+            Ref::new(
+                &self.archetypes[loc.archetype as usize],
+                loc.index,
+                entity,
+                context,
+            )?
+        })
+    }
+
+    pub fn get_mut_with_context<T: SmartComponent<C>, C: Clone>(
+        &self,
+        entity: Entity,
+        context: C,
+    ) -> Result<RefMut<'_, T, C>, ComponentError> {
+        let loc = self.entities.get(entity)?;
+        if loc.archetype == 0 {
+            return Err(MissingComponent::new::<T>().into());
+        }
+        Ok(unsafe {
+            RefMut::new(
+                &self.archetypes[loc.archetype as usize],
+                loc.index,
+                entity,
+                context,
+            )?
+        })
+    }
+
+    pub fn entity_with_context<C: Clone>(
+        &self,
+        entity: Entity,
+        context: C,
+    ) -> Result<EntityRef<'_, C>, NoSuchEntity> {
         Ok(match self.entities.get(entity)? {
-            Location { archetype: 0, .. } => EntityRef::empty(),
-            loc => unsafe { EntityRef::new(&self.archetypes[loc.archetype as usize], loc.index) },
+            Location { archetype: 0, .. } => EntityRef::empty(entity, context),
+            loc => unsafe {
+                EntityRef::new(
+                    &self.archetypes[loc.archetype as usize],
+                    loc.index,
+                    entity,
+                    context,
+                )
+            },
         })
     }
 
@@ -467,7 +570,7 @@ impl World {
             // Find the archetype it'll live in
             let elements = info.iter().map(|x| x.id()).collect();
             let target = match self.index.entry(elements) {
-                Entry::Occupied(x) => *x.get(),
+                Entry::Occupied(x) => *OccupiedEntry::get(&x),
                 Entry::Vacant(x) => {
                     let index = self.archetypes.len() as u32;
                     self.archetypes.push(Archetype::new(info));
@@ -552,7 +655,7 @@ impl World {
                 .collect::<Vec<_>>();
             let elements = info.iter().map(|x| x.id()).collect();
             let target = match self.index.entry(elements) {
-                Entry::Occupied(x) => *x.get(),
+                Entry::Occupied(x) => *OccupiedEntry::get(&x),
                 Entry::Vacant(x) => {
                     self.archetypes.push(Archetype::new(info));
                     let index = (self.archetypes.len() - 1) as u32;
@@ -772,6 +875,13 @@ impl From<NoSuchEntity> for QueryOneError {
 pub trait Component: Send + Sync + 'static {}
 impl<T: Send + Sync + 'static> Component for T {}
 
+pub trait SmartComponent<T: Clone>: Component {
+    fn on_borrow(&self, _id: Entity, _x: T) {}
+    fn on_borrow_mut(&mut self, _id: Entity, _x: T) {}
+}
+
+impl<T: Component> SmartComponent<()> for T {}
+
 /// Iterator over all of a world's entities
 pub struct Iter<'a> {
     archetypes: core::slice::Iter<'a, Archetype>,
@@ -811,13 +921,13 @@ impl<'a> Iterator for Iter<'a> {
                     let index = self.index;
                     self.index += 1;
                     let id = current.entity_id(index);
-                    return Some((
-                        Entity {
-                            id,
-                            generation: self.entities.meta[id as usize].generation,
-                        },
-                        unsafe { EntityRef::new(current, index) },
-                    ));
+                    let entity = Entity {
+                        id,
+                        generation: self.entities.meta[id as usize].generation,
+                    };
+                    return Some((entity, unsafe {
+                        EntityRef::new(current, index, entity, ())
+                    }));
                 }
             }
         }

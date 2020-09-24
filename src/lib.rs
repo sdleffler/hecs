@@ -31,8 +31,8 @@
 //! let a = world.spawn((123, true, "abc"));
 //! let b = world.spawn((42, false));
 //! // Systems can be simple for loops
-//! for (id, (number, &flag)) in world.query_mut::<(&mut i32, &bool)>() {
-//!   if flag { *number *= 2; }
+//! for (id, (mut number, flag)) in world.query::<(&mut i32, &bool)>().iter() {
+//!   if *flag { *number *= 2; }
 //! }
 //! // Random access is simple and safe
 //! assert_eq!(*world.get::<i32>(a).unwrap(), 246);
@@ -80,7 +80,9 @@ pub use query::{
     Access, BatchedIter, Query, QueryBorrow, QueryItem, QueryIter, QueryMut, With, Without,
 };
 pub use query_one::QueryOne;
-pub use world::{ArchetypesGeneration, Component, ComponentError, Iter, SpawnBatchIter, World};
+pub use world::{
+    ArchetypesGeneration, Component, ComponentError, Iter, SmartComponent, SpawnBatchIter, World,
+};
 
 // Unstable implementation details needed by the macros
 #[doc(hidden)]

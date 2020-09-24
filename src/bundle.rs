@@ -25,6 +25,9 @@ pub unsafe trait DynamicBundle {
     /// Invoke a callback on the fields' type IDs, sorted by descending alignment then id
     #[doc(hidden)]
     fn with_ids<T>(&self, f: impl FnOnce(&[TypeId]) -> T) -> T;
+    // /// Invoke a callback on the fields' type IDs, sorted by descending alignment then id
+    // #[doc(hidden)]
+    // fn with_infos<T>(&self, f: impl FnOnce(&[TypeInfo]) -> T) -> T;
     /// Obtain the fields' TypeInfos, sorted by descending alignment then id
     #[doc(hidden)]
     fn type_info(&self) -> Vec<TypeInfo>;
@@ -40,6 +43,9 @@ pub unsafe trait DynamicBundle {
 pub unsafe trait Bundle: DynamicBundle {
     #[doc(hidden)]
     fn with_static_ids<T>(f: impl FnOnce(&[TypeId]) -> T) -> T;
+
+    // #[doc(hidden)]
+    // fn with_static_infos<T>(f: impl FnOnce(&[TypeInfo]) -> T) -> T;
 
     /// Obtain the fields' TypeInfos, sorted by descending alignment then id
     #[doc(hidden)]
@@ -119,6 +125,13 @@ macro_rules! tuple_impl {
                 xs.sort_unstable();
                 xs
             }
+
+            // fn with_static_infos<T>(f: impl FnOnce(&[TypeInfo]) -> T) -> T {
+            //     const N: usize = count!($($name),*);
+            //     let mut xs: [TypeInfo; N] = [$(TypeInfo::of::<$name>()),*];
+            //     xs.sort_unstable();
+            //     f(&xs)
+            // }
 
             #[allow(unused_variables, unused_mut)]
             unsafe fn get(mut f: impl FnMut(TypeInfo) -> Option<NonNull<u8>>) -> Result<Self, MissingComponent> {

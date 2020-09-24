@@ -50,7 +50,7 @@ fn query_all() {
     let ents = world
         .query::<(&i32, &&str)>()
         .iter()
-        .map(|(e, (&i, &s))| (e, i, s))
+        .map(|(e, (i, s))| (e, *i, *s))
         .collect::<Vec<_>>();
     assert_eq!(ents.len(), 2);
     assert!(ents.contains(&(e, 123, "abc")));
@@ -90,7 +90,7 @@ fn query_single_component() {
     let ents = world
         .query::<&i32>()
         .iter()
-        .map(|(e, &i)| (e, i))
+        .map(|(e, i)| (e, *i))
         .collect::<Vec<_>>();
     assert_eq!(ents.len(), 2);
     assert!(ents.contains(&(e, 123)));
@@ -113,7 +113,7 @@ fn query_sparse_component() {
     let ents = world
         .query::<&bool>()
         .iter()
-        .map(|(e, &b)| (e, b))
+        .map(|(e, b)| (e, *b))
         .collect::<Vec<_>>();
     assert_eq!(ents, &[(f, true)]);
 }
@@ -126,7 +126,7 @@ fn query_optional_component() {
     let ents = world
         .query::<(Option<&bool>, &i32)>()
         .iter()
-        .map(|(e, (b, &i))| (e, b.copied(), i))
+        .map(|(e, (b, i))| (e, b.as_deref().copied(), *i))
         .collect::<Vec<_>>();
     assert_eq!(ents.len(), 2);
     assert!(ents.contains(&(e, None, 123)));
@@ -175,7 +175,7 @@ fn dynamic_components() {
         world
             .query::<(&i32, &bool)>()
             .iter()
-            .map(|(e, (&i, &b))| (e, i, b))
+            .map(|(e, (i, b))| (e, *i, *b))
             .collect::<Vec<_>>(),
         &[(e, 42, true)]
     );
@@ -184,7 +184,7 @@ fn dynamic_components() {
         world
             .query::<(&i32, &bool)>()
             .iter()
-            .map(|(e, (&i, &b))| (e, i, b))
+            .map(|(e, (i, b))| (e, *i, *b))
             .collect::<Vec<_>>(),
         &[]
     );
@@ -192,7 +192,7 @@ fn dynamic_components() {
         world
             .query::<(&bool, &&str)>()
             .iter()
-            .map(|(e, (&b, &s))| (e, b, s))
+            .map(|(e, (b, s))| (e, *b, *s))
             .collect::<Vec<_>>(),
         &[(e, true, "abc")]
     );
@@ -378,7 +378,7 @@ fn spawn_batch() {
     let entities = world
         .query::<&i32>()
         .iter()
-        .map(|(_, &x)| x)
+        .map(|(_, x)| *x)
         .collect::<Vec<_>>();
     assert_eq!(entities.len(), 100);
 }
@@ -389,12 +389,22 @@ fn query_one() {
     let a = world.spawn(("abc", 123));
     let b = world.spawn(("def", 456));
     let c = world.spawn(("ghi", 789, true));
-    assert_eq!(world.query_one::<&i32>(a).unwrap().get(), Some(&123));
-    assert_eq!(world.query_one::<&i32>(b).unwrap().get(), Some(&456));
+    assert_eq!(
+        world.query_one::<&i32>(a).unwrap().get().as_deref(),
+        Some(&123)
+    );
+    assert_eq!(
+        world.query_one::<&i32>(b).unwrap().get().as_deref(),
+        Some(&456)
+    );
     assert!(world.query_one::<(&i32, &bool)>(a).unwrap().get().is_none());
     assert_eq!(
-        world.query_one::<(&i32, &bool)>(c).unwrap().get(),
-        Some((&789, &true))
+        world
+            .query_one::<(&i32, &bool)>(c)
+            .unwrap()
+            .get()
+            .map(|(x, y)| (*x, *y)),
+        Some((789, true))
     );
     world.despawn(a).unwrap();
     assert!(world.query_one::<&i32>(a).is_err());
